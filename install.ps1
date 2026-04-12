@@ -1,5 +1,6 @@
 # Psycheros Alpha Installer — Windows
 # Run this in PowerShell: .\install.ps1
+# Updated: 2026-04-12
 
 $PsycherosRepo = "https://github.com/zarilewis/Psycheros-alpha.git"
 $EntityCoreRepo = "https://github.com/zarilewis/entity-core-alpha.git"
