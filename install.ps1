@@ -118,6 +118,13 @@ Write-Host ""
 # --- Generate launcher scripts ---
 Write-Host "Creating launcher scripts..." -ForegroundColor Yellow
 
+# Helper to write .ps1 files with CRLF line endings (required by Windows PowerShell)
+function Write-CrlfFile {
+    param([string]$Path, [string]$Content)
+    $Content = ($Content -replace "`r`n", "`n") -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
 # start.ps1
 $startContent = @'
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -132,7 +139,7 @@ Start-Process "http://localhost:3000"
 
 deno task start
 '@
-Set-Content -Path "$installDir\start.ps1" -Value $startContent -Encoding UTF8
+Write-CrlfFile -Path "$installDir\start.ps1" -Content $startContent
 
 # stop.ps1
 $stopContent = @'
@@ -140,7 +147,7 @@ Write-Host "Stopping Psycheros..." -ForegroundColor Cyan
 Get-Process -Name "deno" -ErrorAction SilentlyContinue | Stop-Process -Force
 Write-Host "Done." -ForegroundColor Green
 '@
-Set-Content -Path "$installDir\stop.ps1" -Value $stopContent -Encoding UTF8
+Write-CrlfFile -Path "$installDir\stop.ps1" -Content $stopContent
 
 # update.ps1
 $updateContent = @'
@@ -159,7 +166,7 @@ Write-Host ""
 Write-Host "Update complete! Run .\start.ps1 to launch." -ForegroundColor Green
 Write-Host ""
 '@
-Set-Content -Path "$installDir\update.ps1" -Value $updateContent -Encoding UTF8
+Write-CrlfFile -Path "$installDir\update.ps1" -Content $updateContent
 
 Write-Host "  Done." -ForegroundColor Green
 Write-Host ""
