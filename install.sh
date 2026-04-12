@@ -9,8 +9,8 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-PSYCHEROS_REPO="https://github.com/zarilewis/Psycheros.git"
-ENTITY_CORE_REPO="https://github.com/zarilewis/entity-core.git"
+PSYCHEROS_REPO="https://github.com/zarilewis/Psycheros-alpha.git"
+ENTITY_CORE_REPO="https://github.com/zarilewis/entity-core-alpha.git"
 
 # --- Timezone detection ---
 detect_timezone() {

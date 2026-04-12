@@ -1,8 +1,8 @@
 # Psycheros Alpha Installer — Windows
 # Run this in PowerShell: .\install.ps1
 
-$PsycherosRepo = "https://github.com/zarilewis/Psycheros.git"
-$EntityCoreRepo = "https://github.com/zarilewis/entity-core.git"
+$PsycherosRepo = "https://github.com/zarilewis/Psycheros-alpha.git"
+$EntityCoreRepo = "https://github.com/zarilewis/entity-core-alpha.git"
 
 Write-Host ""
 Write-Host "  =====================================" -ForegroundColor Cyan
