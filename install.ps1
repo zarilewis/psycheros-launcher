@@ -123,6 +123,38 @@ $startContent = @'
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location "$dir\Psycheros"
 
+# Check for API key
+if ([string]::IsNullOrWhiteSpace($env:ZAI_API_KEY)) {
+    Write-Host ""
+    Write-Host "  No API key found." -ForegroundColor Yellow
+    Write-Host "  You need an API key to use Psycheros." -ForegroundColor White
+    Write-Host ""
+
+    $keyFile = "$dir\.psycheros\api-key.txt"
+    if (Test-Path $keyFile) {
+        $savedKey = Get-Content $keyFile -Raw
+        if (-not [string]::IsNullOrWhiteSpace($savedKey)) {
+            $env:ZAI_API_KEY = $savedKey.Trim()
+            Write-Host "  Loaded saved API key." -ForegroundColor Green
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($env:ZAI_API_KEY)) {
+        $key = Read-Host "  Enter your API key"
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            Write-Host "  No API key provided. Exiting." -ForegroundColor Red
+            exit 1
+        }
+        $env:ZAI_API_KEY = $key
+        $save = Read-Host "  Save this key for next time? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($save) -or $save -match '^[Yy]') {
+            New-Item -ItemType Directory -Force -Path "$dir\.psycheros" | Out-Null
+            Set-Content -Path $keyFile -Value $key -NoNewline
+            Write-Host "  API key saved." -ForegroundColor Green
+        }
+    }
+}
+
 Write-Host ""
 Write-Host "Starting Psycheros..." -ForegroundColor Cyan
 Write-Host ""
