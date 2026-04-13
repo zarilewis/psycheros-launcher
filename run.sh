@@ -28,19 +28,12 @@ if ! command -v deno &> /dev/null; then
   echo -e "${GREEN}  Deno installed!${NC}"
 fi
 
-# Check for Git
-if ! command -v git &> /dev/null; then
-  echo -e "${RED}  Git is not installed.${NC}"
-  if [[ "$OSTYPE" == darwin* ]]; then
-    echo -e "  Install it with: ${YELLOW}xcode-select --install${NC}"
-  else
-    echo "  Install it via your package manager (apt, dnf, pacman, etc.)"
-  fi
-  exit 1
+# Check for Git (optional — dashboard can download repos without it)
+if command -v git &> /dev/null; then
+  echo -e "  Git:  $(git --version | head -1)"
+else
+  echo -e "  Git:  ${YELLOW}not found (updates will be slower without it)${NC}"
 fi
-
-echo -e "  Deno: $(deno --version 2>/dev/null | head -1)"
-echo -e "  Git:  $(git --version | head -1)"
 echo ""
 echo -e "${CYAN}  Opening dashboard in your browser...${NC}"
 echo ""

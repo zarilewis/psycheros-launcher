@@ -62,9 +62,7 @@ psycheros/
 
 ## Prerequisites
 
-The launcher installs Deno automatically if you don't have it. You just need:
-
-- **Git** — download from https://git-scm.com (Windows), or run `xcode-select --install` (Mac), or install via your package manager (Linux)
+None. The launcher installs Deno automatically if you don't have it. Git is optional — if you have it, updates use `git pull` (fast). If you don't, updates download the repos directly (works fine, just slower).
 
 ## After Installing
 

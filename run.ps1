@@ -22,17 +22,13 @@ if (-not $denoCmd) {
     Write-Host "  Deno installed!" -ForegroundColor Green
 }
 
-# Check for Git
+# Check for Git (optional — dashboard can download repos without it)
 $gitCmd = Get-Command git -ErrorAction SilentlyContinue
-if (-not $gitCmd) {
-    Write-Host "  Git is not installed." -ForegroundColor Red
-    Write-Host "  Download it from: https://git-scm.com/download/win" -ForegroundColor White
-    Read-Host "`n  Press Enter to exit"
-    exit 1
+if ($gitCmd) {
+    Write-Host "  Git:  $(& git --version)"
+} else {
+    Write-Host "  Git:  not found (updates will be slower without it)" -ForegroundColor Yellow
 }
-
-Write-Host "  Deno: $(& deno --version 2>$null | Select-Object -First 1)"
-Write-Host "  Git:  $(& git --version)"
 Write-Host ""
 Write-Host "  Opening dashboard in your browser..." -ForegroundColor Cyan
 Write-Host ""

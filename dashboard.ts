@@ -7,8 +7,8 @@
 
 // --- Constants ---
 
-const PSYCHEROS_REPO = "https://github.com/zarilewis/Psycheros-alpha.git";
-const ENTITY_CORE_REPO = "https://github.com/zarilewis/entity-core-alpha.git";
+const PSYCHEROS_REPO = "zarilewis/Psycheros-alpha";
+const ENTITY_CORE_REPO = "zarilewis/entity-core-alpha";
 const PORT = 3001;
 const MAX_LOG_LINES = 500;
 
@@ -16,6 +16,7 @@ const MAX_LOG_LINES = 500;
 
 let psycherosProcess: Deno.ChildProcess | null = null;
 let isRunning = false;
+let hasGit = false;
 const logBuffer: string[] = [];
 const logListeners = new Set<(entry: string) => void>();
 
@@ -156,17 +157,16 @@ async function runCommand(cmd: string, args: string[], cwd?: string): Promise<{ 
 // --- Prerequisites check ---
 
 async function checkPrerequisites(): Promise<{ git: boolean; deno: boolean }> {
-  let git = false;
   let deno = false;
   try {
     const r = await runCommand("git", ["--version"]);
-    git = r.code === 0;
-  } catch { /* not found */ }
+    hasGit = r.code === 0;
+  } catch { hasGit = false; }
   try {
     const r = await runCommand("deno", ["--version"]);
     deno = r.code === 0;
   } catch { /* not found */ }
-  return { git, deno };
+  return { git: hasGit, deno };
 }
 
 // --- Clone / update repos ---
@@ -178,14 +178,72 @@ async function cloneOrUpdate(repoUrl: string, name: string, targetDir: string): 
     exists = (await Deno.stat(gitDir)).isDirectory;
   } catch { /* doesn't exist */ }
 
-  if (exists) {
+  // Check for directory without git (downloaded via tarball)
+  if (!exists) {
+    try {
+      exists = (await Deno.stat(targetDir)).isDirectory;
+    } catch { /* doesn't exist */ }
+  }
+
+  if (exists && hasGit) {
     appendLog(`${name} already exists, updating...`);
     const r = await runCommand("git", ["-C", targetDir, "pull", "--ff-only"]);
     return r.code === 0;
-  } else {
+  } else if (hasGit) {
     appendLog(`Cloning ${name}...`);
-    const r = await runCommand("git", ["clone", repoUrl, targetDir]);
+    const r = await runCommand("git", ["clone", `https://github.com/${repoUrl}.git`, targetDir]);
     return r.code === 0;
+  } else {
+    return await downloadRepo(repoUrl, name, targetDir);
+  }
+}
+
+async function downloadRepo(repoSlug: string, name: string, targetDir: string): Promise<boolean> {
+  appendLog(`Downloading ${name}...`);
+  try {
+    const tarUrl = `https://github.com/${repoSlug}/archive/refs/heads/main.tar.gz`;
+    const response = await fetch(tarUrl);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const tarData = new Uint8Array(await response.arrayBuffer());
+
+    // Decompress gzip
+    const decompressed = new Uint8Array(await new Response(
+      new Response(tarData).body!.pipeThrough(new DecompressionStream("gzip")),
+    ).arrayBuffer());
+
+    // Parse tar and extract
+    let offset = 0;
+    while (offset < decompressed.length - 512) {
+      // Read header
+      const nameBytes = decompressed.slice(offset, offset + 100);
+      const nameStr = new TextDecoder().decode(nameBytes).replace(/\0.*$/, "");
+      const sizeOctal = new TextDecoder().decode(decompressed.slice(offset + 124, offset + 136)).replace(/\0/g, "").trim();
+      const typeFlag = decompressed[offset + 156];
+      const size = parseInt(sizeOctal || "0", 8);
+
+      if (!nameStr || nameStr.endsWith("/")) {
+        offset += 512;
+        continue;
+      }
+
+      offset += 512;
+      if (size > 0) {
+        // Extract just the filename (strip the repo-branch prefix)
+        const parts = nameStr.split("/");
+        const localName = parts.slice(1).join("/");
+        const localPath = localName ? pathJoin(targetDir, localName) : targetDir;
+        const dir = pathJoin(localPath, "..");
+
+        try { Deno.mkdirSync(dir, { recursive: true }); } catch { /* exists */ }
+        Deno.writeFileSync(localPath, decompressed.slice(offset, offset + size));
+        offset += 512 * Math.ceil(size / 512);
+      }
+    }
+    appendLog(`${name} downloaded.`);
+    return true;
+  } catch (e) {
+    appendLog(`Failed to download ${name}: ${e}`);
+    return false;
   }
 }
 
@@ -386,16 +444,30 @@ async function handleRequest(req: Request): Promise<Response> {
     const psycherosDir = pathJoin(settings.installDir, "Psycheros");
     const entityCoreDir = pathJoin(settings.installDir, "entity-core");
 
-    appendLog("Updating Psycheros...");
-    const r1 = await runCommand("git", ["-C", psycherosDir, "pull", "--ff-only"]);
-    if (r1.code !== 0) {
-      return json({ success: false, message: "Failed to update Psycheros." }, 500);
-    }
+    if (hasGit) {
+      appendLog("Updating Psycheros...");
+      const r1 = await runCommand("git", ["-C", psycherosDir, "pull", "--ff-only"]);
+      if (r1.code !== 0) {
+        return json({ success: false, message: "Failed to update Psycheros." }, 500);
+      }
 
-    appendLog("Updating entity-core...");
-    const r2 = await runCommand("git", ["-C", entityCoreDir, "pull", "--ff-only"]);
-    if (r2.code !== 0) {
-      return json({ success: false, message: "Failed to update entity-core." }, 500);
+      appendLog("Updating entity-core...");
+      const r2 = await runCommand("git", ["-C", entityCoreDir, "pull", "--ff-only"]);
+      if (r2.code !== 0) {
+        return json({ success: false, message: "Failed to update entity-core." }, 500);
+      }
+    } else {
+      appendLog("Git not available — re-downloading Psycheros...");
+      const ok1 = await downloadRepo(PSYCHEROS_REPO, "Psycheros", psycherosDir);
+      if (!ok1) {
+        return json({ success: false, message: "Failed to update Psycheros." }, 500);
+      }
+
+      appendLog("Re-downloading entity-core...");
+      const ok2 = await downloadRepo(ENTITY_CORE_REPO, "entity-core", entityCoreDir);
+      if (!ok2) {
+        return json({ success: false, message: "Failed to update entity-core." }, 500);
+      }
     }
 
     appendLog("Update complete!");
@@ -673,14 +745,18 @@ function getHTML(): string {
 
   // Check prerequisites
   fetch("/api/prerequisites").then(r => r.json()).then(p => {
-    const warn = document.getElementById("prereqWarn");
-    const missing = [];
-    if (!p.git) missing.push("Git");
-    if (!p.deno) missing.push("Deno");
-    if (missing.length) {
-      warn.textContent = "Missing: " + missing.join(", ") + ". Install them first, then reload this page.";
+    if (!p.deno) {
+      const warn = document.getElementById("prereqWarn");
+      warn.textContent = "Deno is not installed. This should not happen — run.ps1 / run.sh should have installed it. Try restarting.";
       warn.style.display = "block";
       document.getElementById("btnInstall").disabled = true;
+    } else if (!p.git) {
+      const warn = document.getElementById("prereqWarn");
+      warn.textContent = "Git is not installed. Updates will download repos directly instead of using git pull.";
+      warn.style.display = "block";
+      warn.style.background = "#1c2b3b";
+      warn.style.borderColor = "#2c4b6b";
+      warn.style.color = "#93c5fd";
     }
   });
 
