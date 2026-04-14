@@ -115,6 +115,13 @@ Set-Content -Path "$settingsDir\general-settings.json" -Value $settings -Encodin
 Write-Host "  Settings saved." -ForegroundColor Green
 Write-Host ""
 
+# Save dashboard state so the web launcher knows the install directory
+$dashboardState = @{ installDir = $installDir } | ConvertTo-Json
+$dashboardStatePath = "$HOME\.psycheros-launcher-state.json"
+Set-Content -Path $dashboardStatePath -Value $dashboardState -Encoding UTF8
+Write-Host "  Dashboard state saved." -ForegroundColor Green
+Write-Host ""
+
 # --- Generate launcher scripts ---
 Write-Host "Creating launcher scripts..." -ForegroundColor Yellow
 

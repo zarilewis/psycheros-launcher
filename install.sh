@@ -131,6 +131,10 @@ cat > "$PSYCHEROS_DIR/.psycheros/general-settings.json" << SETTINGS
 SETTINGS
 
 echo -e "  ${GREEN}Settings saved.${NC}"
+
+# Save dashboard state so the web launcher knows the install directory
+printf '{"installDir": "%s"}\n' "$INSTALL_DIR" > "$HOME/.psycheros-launcher-state.json"
+echo -e "  ${GREEN}Dashboard state saved.${NC}"
 echo ""
 
 # --- Generate launcher scripts ---

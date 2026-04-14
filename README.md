@@ -37,7 +37,7 @@ chmod +x run.sh
 
 ## What the Dashboard Does
 
-The dashboard opens at http://localhost:3001 and has four buttons:
+The dashboard opens at http://localhost:3001 and has five buttons:
 
 | Button | What it does |
 |--------|-------------|
@@ -45,6 +45,7 @@ The dashboard opens at http://localhost:3001 and has four buttons:
 | **Update** | Pulls the latest code for both projects |
 | **Start** | Launches the Psycheros server |
 | **Stop** | Shuts down the Psycheros server |
+| **Wipe All Data** | Deletes everything (Psycheros, entity-core, settings) for a fresh reinstall. Shows a confirmation dialog first. |
 
 There's also a **Settings** form where you can set your name, your entity's name, the install directory, and your timezone.
 
@@ -92,6 +93,9 @@ If you prefer the terminal, the old scripts still work:
 ```
 
 ## Troubleshooting
+
+**Start button does nothing**
+If you installed using the command-line installer (`install.ps1` or `install.sh`) and the Start button in the web dashboard doesn't work, click **Save Settings** first — this tells the dashboard where you installed Psycheros. (Fixed in the latest version.)
 
 **"Deno not found" after restart**
 Some systems need a terminal restart to pick up the new PATH. Close and reopen your terminal.

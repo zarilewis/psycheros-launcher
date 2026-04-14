@@ -436,6 +436,29 @@ async function handleRequest(req: Request): Promise<Response> {
     return json({ success: true, message: "Installation complete!" });
   }
 
+  if (path === "/api/save-settings" && req.method === "POST") {
+    const body = await req.json() as Partial<Settings>;
+    const current = loadSettings();
+    const settings: Settings = {
+      installDir: body.installDir ? resolveHome(body.installDir) : current.installDir,
+      userName: body.userName || current.userName,
+      entityName: body.entityName || current.entityName,
+      timezone: body.timezone || current.timezone,
+    };
+
+    const psycherosDir = pathJoin(settings.installDir, "Psycheros");
+    try {
+      await Deno.stat(psycherosDir);
+    } catch {
+      return json({ success: false, message: "Install directory does not exist or is invalid." });
+    }
+
+    savePsycherosSettings(settings);
+    saveDashboardState(settings.installDir);
+    appendLog("Settings saved.");
+    return json({ success: true, message: "Settings saved." });
+  }
+
   if (path === "/api/update" && req.method === "POST") {
     const settings = loadSettings();
     if (!settings.installDir) {
@@ -472,6 +495,55 @@ async function handleRequest(req: Request): Promise<Response> {
 
     appendLog("Update complete!");
     return json({ success: true, message: "Update complete!" });
+  }
+
+  if (path === "/api/wipe" && req.method === "POST") {
+    // Stop Psycheros if running
+    if (isRunning) {
+      await stopPsycheros();
+    }
+
+    const settings = loadSettings();
+    const installDir = settings.installDir;
+
+    if (!installDir || installDir === resolveHome("~/psycheros")) {
+      // Only wipe if a real install dir is recorded
+    }
+
+    let wiped = false;
+    if (installDir) {
+      try {
+        // Delete contents of the install directory (Psycheros/, entity-core/, scripts)
+        for await (const entry of Deno.readDir(installDir)) {
+          const entryPath = pathJoin(installDir, entry.name);
+          try {
+            await Deno.remove(entryPath, { recursive: true });
+            appendLog(`Deleted: ${entryPath}`);
+          } catch (e) {
+            appendLog(`Failed to delete ${entryPath}: ${e}`);
+          }
+        }
+        wiped = true;
+      } catch (e) {
+        appendLog(`Wipe failed: ${e}`);
+      }
+    }
+
+    // Always delete the dashboard state file
+    try {
+      await Deno.remove(getDashboardStatePath());
+      appendLog("Deleted dashboard state file.");
+    } catch { /* no state file */ }
+
+    psycherosProcess = null;
+    isRunning = false;
+
+    if (wiped) {
+      appendLog("Wipe complete. Ready for a fresh install.");
+      return json({ success: true, message: "All data wiped. Ready for a fresh install." });
+    } else {
+      return json({ success: true, message: "Dashboard state cleared." });
+    }
   }
 
   if (path === "/api/start" && req.method === "POST") {
@@ -559,6 +631,20 @@ function getHTML(): string {
 
   .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; color: var(--text); font-size: 0.9rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100; }
   .toast.show { opacity: 1; }
+
+  .btn-wipe { background: transparent; border: 2px solid var(--red); color: var(--red); }
+  .btn-wipe:hover:not(:disabled) { background: var(--red); color: #fff; }
+
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center; }
+  .modal-overlay.active { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--red); border-radius: var(--radius); padding: 28px; max-width: 440px; width: 90%; }
+  .modal h2 { color: var(--red); font-size: 1.1rem; margin-bottom: 12px; }
+  .modal p { color: var(--text-dim); font-size: 0.9rem; line-height: 1.5; margin-bottom: 20px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .modal-cancel { padding: 10px 20px; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+  .modal-cancel:hover { background: var(--border); }
+  .modal-confirm { padding: 10px 20px; background: var(--red); border: none; color: #fff; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; }
+  .modal-confirm:hover { opacity: 0.85; }
 </style>
 </head>
 <body>
@@ -581,6 +667,9 @@ function getHTML(): string {
       </button>
       <button class="btn btn-stop" id="btnStop" onclick="doStop()">
         <div class="spinner"></div><span class="btn-label">Stop</span>
+      </button>
+      <button class="btn btn-wipe" id="btnWipe" onclick="showWipeModal()" style="grid-column: 1 / -1; margin-top: 6px;">
+        <div class="spinner"></div><span class="btn-label">Wipe All Data</span>
       </button>
     </div>
   </div>
@@ -624,6 +713,17 @@ function getHTML(): string {
   </div>
 </div>
 
+<div class="modal-overlay" id="wipeModal">
+  <div class="modal">
+    <h2>Wipe All Data</h2>
+    <p>This will permanently delete all <strong>Psycheros</strong> and <strong>entity-core</strong> data from your install directory, including all entity memory, saved settings, and generated scripts. This cannot be undone.</p>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="hideWipeModal()">Cancel</button>
+      <button class="modal-confirm" id="btnWipeConfirm" onclick="doWipe()">Wipe Everything</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -648,13 +748,14 @@ function getHTML(): string {
     document.getElementById("btnUpdate").disabled = disabled;
     document.getElementById("btnStart").disabled = disabled || document.getElementById("statusDot").classList.contains("running");
     document.getElementById("btnStop").disabled = disabled || !document.getElementById("statusDot").classList.contains("running");
+    document.getElementById("btnWipe").disabled = disabled || document.getElementById("statusDot").classList.contains("running");
   }
 
-  function toast(msg) {
+  function toast(msg, duration) {
     const el = document.getElementById("toast");
     el.textContent = msg;
     el.classList.add("show");
-    setTimeout(() => el.classList.remove("show"), 3000);
+    setTimeout(() => el.classList.remove("show"), duration || 3000);
   }
 
   function clearLog() {
@@ -677,8 +778,14 @@ function getHTML(): string {
         }),
       });
       const data = await res.json();
-      toast(data.success ? data.message : "Error: " + data.message);
-    } catch (e) { toast("Request failed."); }
+      if (data.success) {
+        toast(data.message);
+      } else {
+        toast("Error: " + data.message, 6000);
+        logPanel.textContent += "[" + new Date().toLocaleTimeString() + "] ERROR: " + data.message + "\\n";
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+    } catch (e) { toast("Request failed — is the dashboard running?", 6000); }
     setBusy(btn, false);
   }
 
@@ -689,8 +796,14 @@ function getHTML(): string {
     try {
       const res = await fetch("/api/update", { method: "POST" });
       const data = await res.json();
-      toast(data.success ? data.message : "Error: " + data.message);
-    } catch (e) { toast("Request failed."); }
+      if (data.success) {
+        toast(data.message);
+      } else {
+        toast("Error: " + data.message, 6000);
+        logPanel.textContent += "[" + new Date().toLocaleTimeString() + "] ERROR: " + data.message + "\\n";
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+    } catch (e) { toast("Request failed — is the dashboard running?", 6000); }
     setBusy(btn, false);
   }
 
@@ -701,8 +814,14 @@ function getHTML(): string {
     try {
       const res = await fetch("/api/start", { method: "POST" });
       const data = await res.json();
-      toast(data.success ? data.message : "Error: " + data.message);
-    } catch (e) { toast("Request failed."); }
+      if (data.success) {
+        toast(data.message);
+      } else {
+        toast("Error: " + data.message, 6000);
+        logPanel.textContent += "[" + new Date().toLocaleTimeString() + "] ERROR: " + data.message + "\\n";
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+    } catch (e) { toast("Request failed — is the dashboard running?", 6000); }
     setBusy(btn, false);
   }
 
@@ -713,14 +832,20 @@ function getHTML(): string {
     try {
       const res = await fetch("/api/stop", { method: "POST" });
       const data = await res.json();
-      toast(data.success ? data.message : "Error: " + data.message);
-    } catch (e) { toast("Request failed."); }
+      if (data.success) {
+        toast(data.message);
+      } else {
+        toast("Error: " + data.message, 6000);
+        logPanel.textContent += "[" + new Date().toLocaleTimeString() + "] ERROR: " + data.message + "\\n";
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+    } catch (e) { toast("Request failed — is the dashboard running?", 6000); }
     setBusy(btn, false);
   }
 
   async function doSaveSettings() {
     try {
-      const res = await fetch("/api/install", {
+      const res = await fetch("/api/save-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -733,6 +858,40 @@ function getHTML(): string {
       const data = await res.json();
       toast(data.success ? "Settings saved." : "Error: " + data.message);
     } catch (e) { toast("Failed to save settings."); }
+  }
+
+  function showWipeModal() {
+    document.getElementById("wipeModal").classList.add("active");
+  }
+
+  function hideWipeModal() {
+    document.getElementById("wipeModal").classList.remove("active");
+  }
+
+  async function doWipe() {
+    hideWipeModal();
+    if (busy) return;
+    const btn = document.getElementById("btnWipe");
+    setBusy(btn, true);
+    try {
+      const res = await fetch("/api/wipe", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        toast(data.message, 5000);
+        // Reload settings (will fall back to defaults now)
+        fetch("/api/settings").then(r => r.json()).then(s => {
+          document.getElementById("installDir").value = s.installDir || "";
+          document.getElementById("userName").value = s.userName || "You";
+          document.getElementById("entityName").value = s.entityName || "Assistant";
+          document.getElementById("timezone").value = s.timezone || "";
+        });
+      } else {
+        toast("Error: " + data.message, 6000);
+        logPanel.textContent += "[" + new Date().toLocaleTimeString() + "] ERROR: " + data.message + "\\n";
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+    } catch (e) { toast("Wipe failed — is the dashboard running?", 6000); }
+    setBusy(btn, false);
   }
 
   // Load settings on startup
