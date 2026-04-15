@@ -546,6 +546,18 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  if (path === "/api/psycheros-url" && req.method === "GET") {
+    const settings = loadSettings();
+    const envFile = pathJoin(settings.installDir, "Psycheros", ".env");
+    let port = 3000;
+    try {
+      const env = Deno.readTextFileSync(envFile);
+      const match = env.match(/^PSYCHEROS_PORT=(\d+)/m);
+      if (match) port = parseInt(match[1], 10);
+    } catch { /* use default */ }
+    return json({ url: `http://localhost:${port}` });
+  }
+
   if (path === "/api/start" && req.method === "POST") {
     const settings = loadSettings();
     const result = await startPsycheros(settings.installDir);
@@ -635,6 +647,9 @@ function getHTML(): string {
   .btn-wipe { background: transparent; border: 2px solid var(--red); color: var(--red); }
   .btn-wipe:hover:not(:disabled) { background: var(--red); color: #fff; }
 
+  .btn-open { background: var(--green); color: #fff; }
+  .btn-open:hover:not(:disabled) { opacity: 0.85; }
+
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center; }
   .modal-overlay.active { display: flex; }
   .modal { background: var(--surface); border: 1px solid var(--red); border-radius: var(--radius); padding: 28px; max-width: 440px; width: 90%; }
@@ -670,6 +685,9 @@ function getHTML(): string {
       </button>
       <button class="btn btn-wipe" id="btnWipe" onclick="showWipeModal()" style="grid-column: 1 / -1; margin-top: 6px;">
         <div class="spinner"></div><span class="btn-label">Wipe All Data</span>
+      </button>
+      <button class="btn btn-open" id="btnOpen" onclick="openPsycheros()" style="grid-column: 1 / -1; margin-top: 6px;">
+        <span class="btn-label">Open Psycheros</span>
       </button>
     </div>
   </div>
@@ -749,6 +767,7 @@ function getHTML(): string {
     document.getElementById("btnStart").disabled = disabled || document.getElementById("statusDot").classList.contains("running");
     document.getElementById("btnStop").disabled = disabled || !document.getElementById("statusDot").classList.contains("running");
     document.getElementById("btnWipe").disabled = disabled || document.getElementById("statusDot").classList.contains("running");
+    document.getElementById("btnOpen").disabled = disabled || !document.getElementById("statusDot").classList.contains("running");
   }
 
   function toast(msg, duration) {
@@ -823,6 +842,14 @@ function getHTML(): string {
       }
     } catch (e) { toast("Request failed — is the dashboard running?", 6000); }
     setBusy(btn, false);
+  }
+
+  async function openPsycheros() {
+    try {
+      const res = await fetch("/api/psycheros-url");
+      const data = await res.json();
+      window.open(data.url, "_blank");
+    } catch { toast("Could not determine Psycheros URL.", 6000); }
   }
 
   async function doStop() {
