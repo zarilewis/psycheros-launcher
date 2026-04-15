@@ -683,10 +683,11 @@ function getHTML(): string {
       <button class="btn btn-stop" id="btnStop" onclick="doStop()">
         <div class="spinner"></div><span class="btn-label">Stop</span>
       </button>
-      <button class="btn btn-wipe" id="btnWipe" onclick="showWipeModal()" style="grid-column: 1 / -1; margin-top: 6px;">
-        <div class="spinner"></div><span class="btn-label">Wipe All Data</span>
-      </button>
       <button class="btn btn-open" id="btnOpen" onclick="openPsycheros()" style="grid-column: 1 / -1; margin-top: 6px;">
+        <span class="btn-label">Open Psycheros</span>
+      </button>
+      <div style="height: 1px; background: var(--border); margin: 10px 0; grid-column: 1 / -1;"></div>
+      <button class="btn btn-wipe" id="btnWipe" onclick="showWipeModal()" style="grid-column: 1 / -1;">
         <span class="btn-label">Open Psycheros</span>
       </button>
     </div>
