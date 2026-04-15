@@ -37,7 +37,7 @@ chmod +x run.sh
 
 ## What the Dashboard Does
 
-The dashboard opens at http://localhost:3001 and has five buttons:
+The dashboard opens at http://localhost:3001 and has buttons for managing Psycheros:
 
 | Button | What it does |
 |--------|-------------|
@@ -45,6 +45,7 @@ The dashboard opens at http://localhost:3001 and has five buttons:
 | **Update** | Pulls the latest code for both projects |
 | **Start** | Launches the Psycheros server |
 | **Stop** | Shuts down the Psycheros server |
+| **Open Psycheros** | Opens the Psycheros web interface in a new tab (enabled once Psycheros is running) |
 | **Wipe All Data** | Deletes everything (Psycheros, entity-core, settings) for a fresh reinstall. Shows a confirmation dialog first. |
 
 There's also a **Settings** form where you can set your name, your entity's name, the install directory, and your timezone.
@@ -68,7 +69,7 @@ None. The launcher installs Deno automatically if you don't have it. Git is opti
 ## After Installing
 
 1. Click **Start** in the dashboard
-2. Open http://localhost:3000 in your browser
+2. Click **Open Psycheros** to open the web interface in your browser
 3. Go to **Settings** and enter your API key
 4. Start chatting with your entity
 
