@@ -48,4 +48,4 @@ if [ ! -f "$DASHBOARD" ]; then
   exit 1
 fi
 
-deno run --allow-net --allow-read --allow-write --allow-run "$DASHBOARD"
+deno run --allow-net --allow-read --allow-write --allow-run --allow-env "$DASHBOARD"

@@ -44,4 +44,4 @@ if (-not (Test-Path $Dashboard)) {
     exit 1
 }
 
-deno run --allow-net --allow-read --allow-write --allow-run $Dashboard
+deno run --allow-net --allow-read --allow-write --allow-run --allow-env $Dashboard
