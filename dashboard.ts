@@ -467,6 +467,11 @@ async function handleRequest(req: Request): Promise<Response> {
     const psycherosDir = pathJoin(settings.installDir, "Psycheros");
     const entityCoreDir = pathJoin(settings.installDir, "entity-core");
 
+    // Ensure hasGit is up-to-date
+    if (!hasGit) {
+      const prereqs = await checkPrerequisites();
+    }
+
     if (hasGit) {
       appendLog("Updating Psycheros...");
       const r1 = await runCommand("git", ["-C", psycherosDir, "pull", "--ff-only"]);
@@ -688,7 +693,7 @@ function getHTML(): string {
       </button>
       <div style="height: 1px; background: var(--border); margin: 10px 0; grid-column: 1 / -1;"></div>
       <button class="btn btn-wipe" id="btnWipe" onclick="showWipeModal()" style="grid-column: 1 / -1;">
-        <span class="btn-label">Open Psycheros</span>
+        <span class="btn-label">Wipe All Data</span>
       </button>
     </div>
   </div>
