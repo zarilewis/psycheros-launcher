@@ -58,27 +58,30 @@ function pathJoin(...parts: string[]): string {
 }
 
 function loadSettings(): Settings {
+  let installDir = "";
   try {
     const statePath = getDashboardStatePath();
     const state = JSON.parse(Deno.readTextFileSync(statePath));
-    if (state.installDir) {
-      const settingsFile = pathJoin(state.installDir, "Psycheros", ".psycheros", "general-settings.json");
-      try {
-        const saved = JSON.parse(Deno.readTextFileSync(settingsFile));
-        return {
-          installDir: state.installDir,
-          userName: saved.userName || "You",
-          entityName: saved.entityName || "Assistant",
-          timezone: saved.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-        };
-      } catch {
-        return defaultSettings();
-      }
-    }
+    if (state.installDir) installDir = state.installDir;
   } catch {
     // No state file yet
   }
-  return defaultSettings();
+
+  const prefs = defaultSettings();
+  if (installDir) {
+    const settingsFile = pathJoin(installDir, "Psycheros", ".psycheros", "general-settings.json");
+    try {
+      const saved = JSON.parse(Deno.readTextFileSync(settingsFile));
+      prefs.userName = saved.userName || prefs.userName;
+      prefs.entityName = saved.entityName || prefs.entityName;
+      prefs.timezone = saved.timezone || prefs.timezone;
+    } catch {
+      // Settings file missing or unreadable — keep install dir, use default prefs
+    }
+    prefs.installDir = installDir;
+  }
+
+  return prefs;
 }
 
 function saveDashboardState(installDir: string): void {
@@ -473,7 +476,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (hasGit) {
-      appendLog("Updating Psycheros...");
+      appendLog(`Updating Psycheros (from ${psycherosDir})...`);
       const r1 = await runCommand("git", ["-C", psycherosDir, "pull", "--ff-only"]);
       if (r1.code !== 0) {
         return json({ success: false, message: "Failed to update Psycheros." }, 500);
