@@ -68,12 +68,13 @@ function loadSettings(): Settings {
     const statePath = getDashboardStatePath();
     const state = JSON.parse(Deno.readTextFileSync(statePath));
     if (state.installDir) installDir = state.installDir;
-  } catch {
-    // No state file yet
+  } catch (e) {
+    appendLog(`loadSettings: could not read state file ${getDashboardStatePath()}: ${e}`);
   }
 
   const prefs = defaultSettings();
   if (installDir) {
+    prefs.installDir = installDir;
     const settingsFile = pathJoin(installDir, "Psycheros", ".psycheros", "general-settings.json");
     try {
       const saved = JSON.parse(Deno.readTextFileSync(settingsFile));
@@ -83,7 +84,8 @@ function loadSettings(): Settings {
     } catch {
       // Settings file missing or unreadable — keep install dir, use default prefs
     }
-    prefs.installDir = installDir;
+  } else {
+    appendLog(`loadSettings: no installDir in state file, using default: ${prefs.installDir}`);
   }
 
   return prefs;
@@ -288,10 +290,12 @@ async function startPsycheros(installDir: string): Promise<{ success: boolean; m
     return { success: false, message: "Psycheros is already running." };
   }
   const psycherosDir = pathJoin(installDir, "Psycheros");
+  appendLog(`startPsycheros: checking ${psycherosDir}`);
   try {
     await Deno.stat(psycherosDir);
-  } catch {
-    return { success: false, message: "Psycheros not installed. Click Install first." };
+  } catch (e) {
+    appendLog(`startPsycheros: stat failed — ${e}`);
+    return { success: false, message: `Psycheros not found at ${psycherosDir}. Click Install first.` };
   }
 
   appendLog("Starting Psycheros...");
