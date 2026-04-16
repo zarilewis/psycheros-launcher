@@ -34,7 +34,12 @@ function resolveHome(p: string): string {
     const home = Deno.build.os === "windows"
       ? (Deno.env.get("USERPROFILE") || `${Deno.env.get("HOMEDRIVE") || ""}${Deno.env.get("HOMEPATH") || ""}`)
       : (Deno.env.get("HOME") || "");
-    return p.replace("~", home);
+    const resolved = p.replace("~", home);
+    // Normalize separators on Windows to avoid mixed / and \ paths
+    if (Deno.build.os === "windows") {
+      return resolved.replace(/\//g, "\\");
+    }
+    return resolved;
   }
   return p;
 }
@@ -54,7 +59,7 @@ function getDashboardStatePath(): string {
 
 function pathJoin(...parts: string[]): string {
   const sep = Deno.build.os === "windows" ? "\\" : "/";
-  return parts.join(sep);
+  return parts.map(p => p.replace(/[\/\\]+$/, "")).filter(Boolean).join(sep);
 }
 
 function loadSettings(): Settings {
@@ -87,8 +92,8 @@ function loadSettings(): Settings {
 function saveDashboardState(installDir: string): void {
   try {
     Deno.writeTextFileSync(getDashboardStatePath(), JSON.stringify({ installDir }, null, 2));
-  } catch {
-    // Ignore
+  } catch (e) {
+    appendLog(`WARNING: Failed to save dashboard state to ${getDashboardStatePath()}: ${e}`);
   }
 }
 
@@ -514,34 +519,43 @@ async function handleRequest(req: Request): Promise<Response> {
     const settings = loadSettings();
     const installDir = settings.installDir;
 
+    // Only wipe if a real custom install dir is recorded
     if (!installDir || installDir === resolveHome("~/psycheros")) {
-      // Only wipe if a real install dir is recorded
+      appendLog("No custom install directory to wipe — clearing dashboard state only.");
+      try {
+        await Deno.remove(getDashboardStatePath());
+      } catch { /* no state file */ }
+      psycherosProcess = null;
+      isRunning = false;
+      return json({ success: true, message: "Dashboard state cleared." });
     }
 
     let wiped = false;
-    if (installDir) {
-      try {
-        // Delete contents of the install directory (Psycheros/, entity-core/, scripts)
-        for await (const entry of Deno.readDir(installDir)) {
-          const entryPath = pathJoin(installDir, entry.name);
-          try {
-            await Deno.remove(entryPath, { recursive: true });
-            appendLog(`Deleted: ${entryPath}`);
-          } catch (e) {
-            appendLog(`Failed to delete ${entryPath}: ${e}`);
-          }
+    try {
+      // Delete contents of the install directory (Psycheros/, entity-core/, scripts)
+      for await (const entry of Deno.readDir(installDir)) {
+        const entryPath = pathJoin(installDir, entry.name);
+        try {
+          await Deno.remove(entryPath, { recursive: true });
+          appendLog(`Deleted: ${entryPath}`);
+        } catch (e) {
+          appendLog(`Failed to delete ${entryPath}: ${e}`);
         }
-        wiped = true;
-      } catch (e) {
-        appendLog(`Wipe failed: ${e}`);
       }
+      wiped = true;
+    } catch (e) {
+      appendLog(`Wipe failed: ${e}`);
     }
 
-    // Always delete the dashboard state file
-    try {
-      await Deno.remove(getDashboardStatePath());
-      appendLog("Deleted dashboard state file.");
-    } catch { /* no state file */ }
+    // Only delete the dashboard state file if the wipe succeeded
+    if (wiped) {
+      try {
+        await Deno.remove(getDashboardStatePath());
+        appendLog("Deleted dashboard state file.");
+      } catch { /* no state file */ }
+    } else {
+      appendLog("Dashboard state preserved because wipe failed.");
+    }
 
     psycherosProcess = null;
     isRunning = false;
@@ -550,7 +564,7 @@ async function handleRequest(req: Request): Promise<Response> {
       appendLog("Wipe complete. Ready for a fresh install.");
       return json({ success: true, message: "All data wiped. Ready for a fresh install." });
     } else {
-      return json({ success: true, message: "Dashboard state cleared." });
+      return json({ success: false, message: "Wipe failed. Check the log for details." });
     }
   }
 
