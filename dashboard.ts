@@ -53,8 +53,23 @@ function defaultSettings(): Settings {
   };
 }
 
+function getConfigDir(): string {
+  if (Deno.build.os === "windows") {
+    const appData = Deno.env.get("APPDATA") || Deno.env.get("LOCALAPPDATA") || "";
+    if (appData) return pathJoin(appData, "psycheros-launcher");
+  }
+  return resolveHome("~");
+}
+
 function getDashboardStatePath(): string {
-  return `${resolveHome("~/.psycheros-launcher-state.json")}`;
+  if (Deno.build.os === "windows") {
+    return pathJoin(getConfigDir(), "state.json");
+  }
+  return resolveHome("~/.psycheros-launcher-state.json");
+}
+
+function getLegacyStatePath(): string {
+  return resolveHome("~/.psycheros-launcher-state.json");
 }
 
 function pathJoin(...parts: string[]): string {
@@ -64,12 +79,17 @@ function pathJoin(...parts: string[]): string {
 
 function loadSettings(): Settings {
   let installDir = "";
-  try {
-    const statePath = getDashboardStatePath();
-    const state = JSON.parse(Deno.readTextFileSync(statePath));
-    if (state.installDir) installDir = state.installDir;
-  } catch (e) {
-    appendLog(`loadSettings: could not read state file ${getDashboardStatePath()}: ${e}`);
+
+  // Try new path first, then legacy path (for migration from older versions)
+  const statePaths = [getDashboardStatePath(), getLegacyStatePath()];
+  for (const statePath of statePaths) {
+    try {
+      const state = JSON.parse(Deno.readTextFileSync(statePath));
+      if (state.installDir) {
+        installDir = state.installDir;
+        break;
+      }
+    } catch { /* try next path */ }
   }
 
   const prefs = defaultSettings();
@@ -84,8 +104,6 @@ function loadSettings(): Settings {
     } catch {
       // Settings file missing or unreadable — keep install dir, use default prefs
     }
-  } else {
-    appendLog(`loadSettings: no installDir in state file, using default: ${prefs.installDir}`);
   }
 
   return prefs;
@@ -93,7 +111,9 @@ function loadSettings(): Settings {
 
 function saveDashboardState(installDir: string): void {
   try {
-    Deno.writeTextFileSync(getDashboardStatePath(), JSON.stringify({ installDir }, null, 2));
+    const statePath = getDashboardStatePath();
+    Deno.mkdirSync(getConfigDir(), { recursive: true });
+    Deno.writeTextFileSync(statePath, JSON.stringify({ installDir }, null, 2));
   } catch (e) {
     appendLog(`WARNING: Failed to save dashboard state to ${getDashboardStatePath()}: ${e}`);
   }
@@ -526,9 +546,9 @@ async function handleRequest(req: Request): Promise<Response> {
     // Only wipe if a real custom install dir is recorded
     if (!installDir || installDir === resolveHome("~/psycheros")) {
       appendLog("No custom install directory to wipe — clearing dashboard state only.");
-      try {
-        await Deno.remove(getDashboardStatePath());
-      } catch { /* no state file */ }
+      for (const p of [getDashboardStatePath(), getLegacyStatePath()]) {
+        try { await Deno.remove(p); } catch { /* no file */ }
+      }
       psycherosProcess = null;
       isRunning = false;
       return json({ success: true, message: "Dashboard state cleared." });
@@ -553,10 +573,10 @@ async function handleRequest(req: Request): Promise<Response> {
 
     // Only delete the dashboard state file if the wipe succeeded
     if (wiped) {
-      try {
-        await Deno.remove(getDashboardStatePath());
-        appendLog("Deleted dashboard state file.");
-      } catch { /* no state file */ }
+      for (const p of [getDashboardStatePath(), getLegacyStatePath()]) {
+        try { await Deno.remove(p); } catch { /* no file */ }
+      }
+      appendLog("Deleted dashboard state file.");
     } else {
       appendLog("Dashboard state preserved because wipe failed.");
     }
