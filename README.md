@@ -42,25 +42,30 @@ The dashboard opens at http://localhost:3001 and has buttons for managing Psyche
 | Button | What it does |
 |--------|-------------|
 | **Install** | Downloads Psycheros and entity-core, saves your settings |
-| **Update** | Pulls the latest code for both projects |
+| **Update** | Pulls the latest code for all installed projects |
 | **Start** | Launches the Psycheros server |
 | **Stop** | Shuts down the Psycheros server |
 | **Open Psycheros** | Opens the Psycheros web interface in a new tab (enabled once Psycheros is running) |
-| **Wipe All Data** | Deletes everything (Psycheros, entity-core, settings) for a fresh reinstall. Shows a confirmation dialog first. |
+| **Wipe All Data** | Deletes everything (Psycheros, entity-core, Entity Loom) for a fresh reinstall. Shows a confirmation dialog first. |
 
-There's also a **Settings** form where you can set your name, your entity's name, the install directory, and your timezone.
+There's also a **Tools** section for Entity Loom — a companion app that extracts memories and knowledge graphs from conversations on other platforms and imports them into Psycheros. Entity Loom is installed separately via its own **Install** button, and started/stopped from the Tools card once installed.
+
+The **Settings** form lets you configure each component's install path independently, plus your name, your entity's name, and your timezone. All paths are saved between sessions.
 
 A **Log** panel at the bottom shows what's happening in real time.
 
 ## What Gets Installed
 
-Everything goes into one directory (default `~/psycheros`):
+Each component has its own configurable path (defaults shown):
 
 ```
-psycheros/
+~/psycheros/
 ├── Psycheros/      ← main app
-└── entity-core/    ← entity memory & identity
+├── entity-core/    ← entity memory & identity
+└── entity-loom/    ← memory import tool (optional, installed separately)
 ```
+
+You can change each path in Settings if you already have a project cloned elsewhere (e.g., in a dev workspace).
 
 ## Prerequisites
 

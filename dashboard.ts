@@ -9,13 +9,17 @@
 
 const PSYCHEROS_REPO = "zarilewis/Psycheros-alpha";
 const ENTITY_CORE_REPO = "zarilewis/entity-core-alpha";
+const ENTITY_LOOM_REPO = "zarilewis/entity-loom";
+const ENTITY_LOOM_PORT = 3210;
 const PORT = 3001;
 const MAX_LOG_LINES = 500;
 
 // --- State ---
 
 let psycherosProcess: Deno.ChildProcess | null = null;
+let entityLoomProcess: Deno.ChildProcess | null = null;
 let isRunning = false;
+let entityLoomRunning = false;
 let hasGit = false;
 const logBuffer: string[] = [];
 const logListeners = new Set<(entry: string) => void>();
@@ -23,7 +27,9 @@ const logListeners = new Set<(entry: string) => void>();
 // --- Settings ---
 
 interface Settings {
-  installDir: string;
+  psycherosDir: string;
+  entityCoreDir: string;
+  entityLoomDir: string;
   userName: string;
   entityName: string;
   timezone: string;
@@ -45,8 +51,11 @@ function resolveHome(p: string): string {
 }
 
 function defaultSettings(): Settings {
+  const base = resolveHome("~/psycheros");
   return {
-    installDir: resolveHome("~/psycheros"),
+    psycherosDir: pathJoin(base, "Psycheros"),
+    entityCoreDir: pathJoin(base, "entity-core"),
+    entityLoomDir: pathJoin(base, "entity-loom"),
     userName: "You",
     entityName: "Assistant",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -78,49 +87,67 @@ function pathJoin(...parts: string[]): string {
 }
 
 function loadSettings(): Settings {
-  let installDir = "";
+  let psycherosDir = "";
+  let entityCoreDir = "";
+  let entityLoomDir = "";
 
   // Try new path first, then legacy path (for migration from older versions)
   const statePaths = [getDashboardStatePath(), getLegacyStatePath()];
   for (const statePath of statePaths) {
     try {
       const state = JSON.parse(Deno.readTextFileSync(statePath));
+      // New format: separate dirs
+      if (state.psycherosDir) {
+        psycherosDir = state.psycherosDir;
+        entityCoreDir = state.entityCoreDir || "";
+        entityLoomDir = state.entityLoomDir || "";
+        break;
+      }
+      // Legacy format: single installDir — migrate to separate dirs
       if (state.installDir) {
-        installDir = state.installDir;
+        psycherosDir = pathJoin(state.installDir, "Psycheros");
+        entityCoreDir = pathJoin(state.installDir, "entity-core");
+        entityLoomDir = pathJoin(state.installDir, "entity-loom");
         break;
       }
     } catch { /* try next path */ }
   }
 
   const prefs = defaultSettings();
-  if (installDir) {
-    prefs.installDir = installDir;
-    const settingsFile = pathJoin(installDir, "Psycheros", ".psycheros", "general-settings.json");
+  if (psycherosDir) {
+    prefs.psycherosDir = psycherosDir;
+    if (entityCoreDir) prefs.entityCoreDir = entityCoreDir;
+    if (entityLoomDir) prefs.entityLoomDir = entityLoomDir;
+    const settingsFile = pathJoin(psycherosDir, ".psycheros", "general-settings.json");
     try {
       const saved = JSON.parse(Deno.readTextFileSync(settingsFile));
       prefs.userName = saved.userName || prefs.userName;
       prefs.entityName = saved.entityName || prefs.entityName;
       prefs.timezone = saved.timezone || prefs.timezone;
     } catch {
-      // Settings file missing or unreadable — keep install dir, use default prefs
+      // Settings file missing or unreadable — keep dirs, use default prefs
     }
   }
 
   return prefs;
 }
 
-function saveDashboardState(installDir: string): void {
+function saveDashboardState(settings: Settings): void {
   try {
     const statePath = getDashboardStatePath();
     Deno.mkdirSync(getConfigDir(), { recursive: true });
-    Deno.writeTextFileSync(statePath, JSON.stringify({ installDir }, null, 2));
+    Deno.writeTextFileSync(statePath, JSON.stringify({
+      psycherosDir: settings.psycherosDir,
+      entityCoreDir: settings.entityCoreDir,
+      entityLoomDir: settings.entityLoomDir,
+    }, null, 2));
   } catch (e) {
     appendLog(`WARNING: Failed to save dashboard state to ${getDashboardStatePath()}: ${e}`);
   }
 }
 
 function savePsycherosSettings(settings: Settings): void {
-  const dir = pathJoin(settings.installDir, "Psycheros", ".psycheros");
+  const dir = pathJoin(settings.psycherosDir, ".psycheros");
   Deno.mkdirSync(dir, { recursive: true });
   Deno.writeTextFileSync(
     pathJoin(dir, "general-settings.json"),
@@ -305,11 +332,10 @@ async function streamProcessOutput(process: Deno.ChildProcess): Promise<void> {
   isRunning = false;
 }
 
-async function startPsycheros(installDir: string): Promise<{ success: boolean; message: string }> {
+async function startPsycheros(psycherosDir: string): Promise<{ success: boolean; message: string }> {
   if (isRunning) {
     return { success: false, message: "Psycheros is already running." };
   }
-  const psycherosDir = pathJoin(installDir, "Psycheros");
   appendLog(`startPsycheros: checking ${psycherosDir}`);
   try {
     await Deno.stat(psycherosDir);
@@ -374,6 +400,98 @@ async function stopPsycheros(): Promise<{ success: boolean; message: string }> {
   return { success: true, message: "Psycheros stopped." };
 }
 
+// --- Entity Loom process management ---
+
+async function streamEntityLoomOutput(process: Deno.ChildProcess): Promise<void> {
+  entityLoomRunning = true;
+  const readStream = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      appendLog(text);
+    }
+    const final = decoder.decode();
+    if (final) appendLog(final);
+  };
+
+  await Promise.all([
+    readStream(process.stdout!),
+    readStream(process.stderr!),
+  ]);
+
+  const status = await process.status;
+  appendLog(`Entity Loom exited with code ${status.code}`);
+  entityLoomProcess = null;
+  entityLoomRunning = false;
+}
+
+async function startEntityLoom(entityLoomDir: string): Promise<{ success: boolean; message: string }> {
+  if (entityLoomRunning) {
+    return { success: false, message: "Entity Loom is already running." };
+  }
+  try {
+    await Deno.stat(entityLoomDir);
+  } catch {
+    return { success: false, message: `Entity Loom not found at ${entityLoomDir}. Click Install to get it.` };
+  }
+
+  appendLog("Starting Entity Loom...");
+  const command = new Deno.Command("deno", {
+    args: ["task", "start"],
+    cwd: entityLoomDir,
+    stdout: "piped",
+    stderr: "piped",
+  });
+  entityLoomProcess = command.spawn();
+  streamEntityLoomOutput(entityLoomProcess);
+  return { success: true, message: "Entity Loom is starting..." };
+}
+
+async function stopEntityLoom(): Promise<{ success: boolean; message: string }> {
+  if (!entityLoomProcess || !entityLoomRunning) {
+    return { success: false, message: "Entity Loom is not running." };
+  }
+
+  appendLog("Stopping Entity Loom...");
+  try {
+    entityLoomProcess.kill("SIGINT");
+  } catch {
+    try {
+      entityLoomProcess.kill("SIGTERM");
+    } catch {
+      if (Deno.build.os === "windows" && entityLoomProcess.pid) {
+        try {
+          await runCommand("taskkill", ["/pid", entityLoomProcess.pid.toString(), "/f", "/t"]);
+        } catch { /* give up */ }
+      }
+    }
+  }
+
+  try {
+    await Promise.race([
+      entityLoomProcess.status,
+      new Promise((_, reject) => setTimeout(() => reject("timeout"), 5000)),
+    ]);
+  } catch {
+    if (entityLoomProcess) {
+      try { entityLoomProcess.kill("SIGKILL"); } catch { /* ignore */ }
+      if (Deno.build.os === "windows" && entityLoomProcess.pid) {
+        try {
+          await runCommand("taskkill", ["/pid", entityLoomProcess.pid.toString(), "/f", "/t"]);
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  entityLoomProcess = null;
+  entityLoomRunning = false;
+  appendLog("Entity Loom stopped.");
+  return { success: true, message: "Entity Loom stopped." };
+}
+
 // --- Request handling ---
 
 function json(data: unknown, status = 200): Response {
@@ -397,7 +515,12 @@ async function handleRequest(req: Request): Promise<Response> {
   // --- API routes ---
 
   if (path === "/api/status") {
-    return json({ running: isRunning });
+    const settings = loadSettings();
+    let entityLoomInstalled = false;
+    if (settings.entityLoomDir) {
+      try { entityLoomInstalled = (await Deno.stat(settings.entityLoomDir)).isDirectory; } catch { /* not installed */ }
+    }
+    return json({ running: isRunning, entityLoomRunning, entityLoomInstalled });
   }
 
   if (path === "/api/prerequisites") {
@@ -439,31 +562,32 @@ async function handleRequest(req: Request): Promise<Response> {
   if (path === "/api/install" && req.method === "POST") {
     const body = await req.json() as Partial<Settings>;
 
+    const defaults = defaultSettings();
     const settings: Settings = {
-      installDir: body.installDir ? resolveHome(body.installDir) : defaultSettings().installDir,
+      psycherosDir: body.psycherosDir ? resolveHome(body.psycherosDir) : defaults.psycherosDir,
+      entityCoreDir: body.entityCoreDir ? resolveHome(body.entityCoreDir) : defaults.entityCoreDir,
+      entityLoomDir: body.entityLoomDir ? resolveHome(body.entityLoomDir) : defaults.entityLoomDir,
       userName: body.userName || "You",
       entityName: body.entityName || "Assistant",
       timezone: body.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
 
-    appendLog(`Installing to ${settings.installDir}...`);
-    Deno.mkdirSync(settings.installDir, { recursive: true });
+    appendLog(`Installing Psycheros to ${settings.psycherosDir}...`);
+    Deno.mkdirSync(pathJoin(settings.psycherosDir, ".."), { recursive: true });
 
-    const psycherosDir = pathJoin(settings.installDir, "Psycheros");
-    const entityCoreDir = pathJoin(settings.installDir, "entity-core");
-
-    const ok1 = await cloneOrUpdate(PSYCHEROS_REPO, "Psycheros", psycherosDir);
+    const ok1 = await cloneOrUpdate(PSYCHEROS_REPO, "Psycheros", settings.psycherosDir);
     if (!ok1) {
       return json({ success: false, message: "Failed to clone Psycheros." }, 500);
     }
 
-    const ok2 = await cloneOrUpdate(ENTITY_CORE_REPO, "entity-core", entityCoreDir);
+    appendLog(`Installing entity-core to ${settings.entityCoreDir}...`);
+    const ok2 = await cloneOrUpdate(ENTITY_CORE_REPO, "entity-core", settings.entityCoreDir);
     if (!ok2) {
       return json({ success: false, message: "Failed to clone entity-core." }, 500);
     }
 
     savePsycherosSettings(settings);
-    saveDashboardState(settings.installDir);
+    saveDashboardState(settings);
     appendLog("Installation complete!");
     return json({ success: true, message: "Installation complete!" });
   }
@@ -472,32 +596,28 @@ async function handleRequest(req: Request): Promise<Response> {
     const body = await req.json() as Partial<Settings>;
     const current = loadSettings();
     const settings: Settings = {
-      installDir: body.installDir ? resolveHome(body.installDir) : current.installDir,
+      psycherosDir: body.psycherosDir ? resolveHome(body.psycherosDir) : current.psycherosDir,
+      entityCoreDir: body.entityCoreDir ? resolveHome(body.entityCoreDir) : current.entityCoreDir,
+      entityLoomDir: body.entityLoomDir ? resolveHome(body.entityLoomDir) : current.entityLoomDir,
       userName: body.userName || current.userName,
       entityName: body.entityName || current.entityName,
       timezone: body.timezone || current.timezone,
     };
 
-    const psycherosDir = pathJoin(settings.installDir, "Psycheros");
     try {
-      await Deno.stat(psycherosDir);
+      await Deno.stat(settings.psycherosDir);
     } catch {
-      return json({ success: false, message: "Install directory does not exist or is invalid." });
+      return json({ success: false, message: "Psycheros directory does not exist or is invalid." });
     }
 
     savePsycherosSettings(settings);
-    saveDashboardState(settings.installDir);
+    saveDashboardState(settings);
     appendLog("Settings saved.");
     return json({ success: true, message: "Settings saved." });
   }
 
   if (path === "/api/update" && req.method === "POST") {
     const settings = loadSettings();
-    if (!settings.installDir) {
-      return json({ success: false, message: "Not installed yet." });
-    }
-    const psycherosDir = pathJoin(settings.installDir, "Psycheros");
-    const entityCoreDir = pathJoin(settings.installDir, "entity-core");
 
     // Ensure hasGit is up-to-date
     if (!hasGit) {
@@ -505,29 +625,48 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (hasGit) {
-      appendLog(`Updating Psycheros (from ${psycherosDir})...`);
-      const r1 = await runCommand("git", ["-C", psycherosDir, "pull", "--ff-only"]);
+      appendLog(`Updating Psycheros (from ${settings.psycherosDir})...`);
+      const r1 = await runCommand("git", ["-C", settings.psycherosDir, "pull", "--ff-only"]);
       if (r1.code !== 0) {
         return json({ success: false, message: "Failed to update Psycheros." }, 500);
       }
 
       appendLog("Updating entity-core...");
-      const r2 = await runCommand("git", ["-C", entityCoreDir, "pull", "--ff-only"]);
+      const r2 = await runCommand("git", ["-C", settings.entityCoreDir, "pull", "--ff-only"]);
       if (r2.code !== 0) {
         return json({ success: false, message: "Failed to update entity-core." }, 500);
       }
+
+      // Only update entity-loom if installed
+      try {
+        await Deno.stat(settings.entityLoomDir);
+        appendLog("Updating entity-loom...");
+        const r3 = await runCommand("git", ["-C", settings.entityLoomDir, "pull", "--ff-only"]);
+        if (r3.code !== 0) {
+          return json({ success: false, message: "Failed to update entity-loom." }, 500);
+        }
+      } catch { /* entity-loom not installed, skip */ }
     } else {
       appendLog("Git not available — re-downloading Psycheros...");
-      const ok1 = await downloadRepo(PSYCHEROS_REPO, "Psycheros", psycherosDir);
+      const ok1 = await downloadRepo(PSYCHEROS_REPO, "Psycheros", settings.psycherosDir);
       if (!ok1) {
         return json({ success: false, message: "Failed to update Psycheros." }, 500);
       }
 
       appendLog("Re-downloading entity-core...");
-      const ok2 = await downloadRepo(ENTITY_CORE_REPO, "entity-core", entityCoreDir);
+      const ok2 = await downloadRepo(ENTITY_CORE_REPO, "entity-core", settings.entityCoreDir);
       if (!ok2) {
         return json({ success: false, message: "Failed to update entity-core." }, 500);
       }
+
+      try {
+        await Deno.stat(settings.entityLoomDir);
+        appendLog("Re-downloading entity-loom...");
+        const ok3 = await downloadRepo(ENTITY_LOOM_REPO, "entity-loom", settings.entityLoomDir);
+        if (!ok3) {
+          return json({ success: false, message: "Failed to update entity-loom." }, 500);
+        }
+      } catch { /* entity-loom not installed, skip */ }
     }
 
     appendLog("Update complete!");
@@ -539,39 +678,43 @@ async function handleRequest(req: Request): Promise<Response> {
     if (isRunning) {
       await stopPsycheros();
     }
+    if (entityLoomRunning) {
+      await stopEntityLoom();
+    }
 
     const settings = loadSettings();
-    const installDir = settings.installDir;
+    const defaults = defaultSettings();
+    const isDefault = settings.psycherosDir === defaults.psycherosDir
+      && settings.entityCoreDir === defaults.entityCoreDir
+      && settings.entityLoomDir === defaults.entityLoomDir;
 
-    // Only wipe if a real custom install dir is recorded
-    if (!installDir || installDir === resolveHome("~/psycheros")) {
-      appendLog("No custom install directory to wipe — clearing dashboard state only.");
+    if (isDefault) {
+      appendLog("Using default paths — clearing dashboard state only.");
       for (const p of [getDashboardStatePath(), getLegacyStatePath()]) {
         try { await Deno.remove(p); } catch { /* no file */ }
       }
       psycherosProcess = null;
       isRunning = false;
+      entityLoomProcess = null;
+      entityLoomRunning = false;
       return json({ success: true, message: "Dashboard state cleared." });
     }
 
-    let wiped = false;
-    try {
-      // Delete contents of the install directory (Psycheros/, entity-core/, scripts)
-      for await (const entry of Deno.readDir(installDir)) {
-        const entryPath = pathJoin(installDir, entry.name);
-        try {
-          await Deno.remove(entryPath, { recursive: true });
-          appendLog(`Deleted: ${entryPath}`);
-        } catch (e) {
-          appendLog(`Failed to delete ${entryPath}: ${e}`);
-        }
+    let wiped = true;
+    for (const [name, dir] of [
+      ["Psycheros", settings.psycherosDir],
+      ["entity-core", settings.entityCoreDir],
+      ["entity-loom", settings.entityLoomDir],
+    ] as const) {
+      try {
+        await Deno.remove(dir, { recursive: true });
+        appendLog(`Deleted: ${dir}`);
+      } catch (e) {
+        appendLog(`Failed to delete ${name} at ${dir}: ${e}`);
+        wiped = false;
       }
-      wiped = true;
-    } catch (e) {
-      appendLog(`Wipe failed: ${e}`);
     }
 
-    // Only delete the dashboard state file if the wipe succeeded
     if (wiped) {
       for (const p of [getDashboardStatePath(), getLegacyStatePath()]) {
         try { await Deno.remove(p); } catch { /* no file */ }
@@ -583,18 +726,20 @@ async function handleRequest(req: Request): Promise<Response> {
 
     psycherosProcess = null;
     isRunning = false;
+    entityLoomProcess = null;
+    entityLoomRunning = false;
 
     if (wiped) {
       appendLog("Wipe complete. Ready for a fresh install.");
       return json({ success: true, message: "All data wiped. Ready for a fresh install." });
     } else {
-      return json({ success: false, message: "Wipe failed. Check the log for details." });
+      return json({ success: false, message: "Wipe partially failed. Check the log for details." });
     }
   }
 
   if (path === "/api/psycheros-url" && req.method === "GET") {
     const settings = loadSettings();
-    const envFile = pathJoin(settings.installDir, "Psycheros", ".env");
+    const envFile = pathJoin(settings.psycherosDir, ".env");
     let port = 3000;
     try {
       const env = Deno.readTextFileSync(envFile);
@@ -606,12 +751,34 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (path === "/api/start" && req.method === "POST") {
     const settings = loadSettings();
-    const result = await startPsycheros(settings.installDir);
+    const result = await startPsycheros(settings.psycherosDir);
     return json(result);
   }
 
   if (path === "/api/stop" && req.method === "POST") {
     const result = await stopPsycheros();
+    return json(result);
+  }
+
+  if (path === "/api/entity-loom/install" && req.method === "POST") {
+    const settings = loadSettings();
+    Deno.mkdirSync(pathJoin(settings.entityLoomDir, ".."), { recursive: true });
+    const ok = await cloneOrUpdate(ENTITY_LOOM_REPO, "entity-loom", settings.entityLoomDir);
+    if (!ok) {
+      return json({ success: false, message: "Failed to clone entity-loom." }, 500);
+    }
+    appendLog("Entity Loom installed.");
+    return json({ success: true, message: "Entity Loom installed!" });
+  }
+
+  if (path === "/api/entity-loom/start" && req.method === "POST") {
+    const settings = loadSettings();
+    const result = await startEntityLoom(settings.entityLoomDir);
+    return json(result);
+  }
+
+  if (path === "/api/entity-loom/stop" && req.method === "POST") {
+    const result = await stopEntityLoom();
     return json(result);
   }
 
@@ -696,6 +863,14 @@ function getHTML(): string {
   .btn-open { background: var(--green); color: #fff; }
   .btn-open:hover:not(:disabled) { opacity: 0.85; }
 
+  .btn-tool { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); font-size: 0.85rem; padding: 10px 14px; }
+  .btn-tool:hover:not(:disabled) { background: var(--border); color: var(--text); }
+  .btn-tool.running { background: #1a2e1a; border-color: #2d5a2d; color: var(--green); }
+  .tool-actions { display: flex; gap: 8px; align-items: center; }
+  .tool-label { font-size: 0.8rem; color: var(--text-dim); margin-bottom: 10px; }
+  .tool-label a { color: var(--blue); text-decoration: none; }
+  .tool-label a:hover { text-decoration: underline; }
+
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center; }
   .modal-overlay.active { display: flex; }
   .modal { background: var(--surface); border: 1px solid var(--red); border-radius: var(--radius); padding: 28px; max-width: 440px; width: 90%; }
@@ -740,11 +915,35 @@ function getHTML(): string {
   </div>
 
   <div class="card">
+    <div class="card-title">Tools</div>
+    <div class="tool-label">Entity Loom — extract memories and knowledge graphs from conversations on other platforms and import them into Psycheros. <a href="https://github.com/zarilewis/entity-loom" target="_blank">Learn more</a></div>
+    <div class="tool-actions">
+      <button class="btn btn-tool" id="btnLoomInstall" onclick="doLoomInstall()">
+        <div class="spinner"></div><span class="btn-label">Install Entity Loom</span>
+      </button>
+      <button class="btn btn-tool" id="btnLoomToggle" onclick="doLoomToggle()" style="display:none;">
+        <div class="spinner"></div><span class="btn-label">Start Entity Loom</span>
+      </button>
+      <button class="btn btn-tool btn-open" id="btnLoomOpen" onclick="openEntityLoom()" disabled style="font-size:0.85rem; padding:10px 14px; display:none;">
+        <span class="btn-label">Open Wizard</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Settings</div>
     <div class="form">
       <div class="field">
-        <label>Install directory</label>
-        <input type="text" id="installDir" placeholder="~/psycheros">
+        <label>Psycheros path</label>
+        <input type="text" id="psycherosDir" placeholder="~/psycheros/Psycheros">
+      </div>
+      <div class="field">
+        <label>entity-core path</label>
+        <input type="text" id="entityCoreDir" placeholder="~/psycheros/entity-core">
+      </div>
+      <div class="field">
+        <label>Entity Loom path</label>
+        <input type="text" id="entityLoomDir" placeholder="~/psycheros/entity-loom">
       </div>
       <div class="field">
         <label>Your name</label>
@@ -781,7 +980,7 @@ function getHTML(): string {
 <div class="modal-overlay" id="wipeModal">
   <div class="modal">
     <h2>Wipe All Data</h2>
-    <p>This will permanently delete all <strong>Psycheros</strong> and <strong>entity-core</strong> data from your install directory, including all entity memory, saved settings, and generated scripts. This cannot be undone.</p>
+    <p>This will permanently delete all <strong>Psycheros</strong>, <strong>entity-core</strong>, and <strong>Entity Loom</strong> data from the configured paths, including all entity memory, saved settings, and generated scripts. This cannot be undone.</p>
     <div class="modal-actions">
       <button class="modal-cancel" onclick="hideWipeModal()">Cancel</button>
       <button class="modal-confirm" id="btnWipeConfirm" onclick="doWipe()">Wipe Everything</button>
@@ -815,6 +1014,10 @@ function getHTML(): string {
     document.getElementById("btnStop").disabled = disabled || !document.getElementById("statusDot").classList.contains("running");
     document.getElementById("btnWipe").disabled = disabled || document.getElementById("statusDot").classList.contains("running");
     document.getElementById("btnOpen").disabled = disabled || !document.getElementById("statusDot").classList.contains("running");
+    document.getElementById("btnLoomInstall").disabled = disabled;
+    const loomBtn = document.getElementById("btnLoomToggle");
+    if (!disabled) loomBtn.disabled = false;
+    document.getElementById("btnLoomOpen").disabled = disabled || !loomBtn.classList.contains("running");
   }
 
   function toast(msg, duration) {
@@ -837,7 +1040,9 @@ function getHTML(): string {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          installDir: document.getElementById("installDir").value,
+          psycherosDir: document.getElementById("psycherosDir").value,
+          entityCoreDir: document.getElementById("entityCoreDir").value,
+          entityLoomDir: document.getElementById("entityLoomDir").value,
           userName: document.getElementById("userName").value,
           entityName: document.getElementById("entityName").value,
           timezone: document.getElementById("timezone").value,
@@ -923,7 +1128,9 @@ function getHTML(): string {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          installDir: document.getElementById("installDir").value,
+          psycherosDir: document.getElementById("psycherosDir").value,
+          entityCoreDir: document.getElementById("entityCoreDir").value,
+          entityLoomDir: document.getElementById("entityLoomDir").value,
           userName: document.getElementById("userName").value,
           entityName: document.getElementById("entityName").value,
           timezone: document.getElementById("timezone").value,
@@ -942,6 +1149,45 @@ function getHTML(): string {
     document.getElementById("wipeModal").classList.remove("active");
   }
 
+  async function doLoomInstall() {
+    if (busy) return;
+    const btn = document.getElementById("btnLoomInstall");
+    setBusy(btn, true);
+    try {
+      const res = await fetch("/api/entity-loom/install", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        toast(data.message);
+      } else {
+        toast("Error: " + data.message, 6000);
+      }
+    } catch (e) { toast("Request failed.", 6000); }
+    setBusy(btn, false);
+    pollStatus();
+  }
+
+  async function doLoomToggle() {
+    if (busy) return;
+    const btn = document.getElementById("btnLoomToggle");
+    setBusy(btn, true);
+    try {
+      const loomRunning = document.getElementById("btnLoomToggle").classList.contains("running");
+      const url = loomRunning ? "/api/entity-loom/stop" : "/api/entity-loom/start";
+      const res = await fetch(url, { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        toast(data.message);
+      } else {
+        toast("Error: " + data.message, 6000);
+      }
+    } catch (e) { toast("Request failed.", 6000); }
+    setBusy(btn, false);
+  }
+
+  function openEntityLoom() {
+    window.open("http://localhost:${ENTITY_LOOM_PORT}", "_blank");
+  }
+
   async function doWipe() {
     hideWipeModal();
     if (busy) return;
@@ -954,7 +1200,9 @@ function getHTML(): string {
         toast(data.message, 5000);
         // Reload settings (will fall back to defaults now)
         fetch("/api/settings").then(r => r.json()).then(s => {
-          document.getElementById("installDir").value = s.installDir || "";
+          document.getElementById("psycherosDir").value = s.psycherosDir || "";
+          document.getElementById("entityCoreDir").value = s.entityCoreDir || "";
+          document.getElementById("entityLoomDir").value = s.entityLoomDir || "";
           document.getElementById("userName").value = s.userName || "You";
           document.getElementById("entityName").value = s.entityName || "Assistant";
           document.getElementById("timezone").value = s.timezone || "";
@@ -970,7 +1218,9 @@ function getHTML(): string {
 
   // Load settings on startup
   fetch("/api/settings").then(r => r.json()).then(s => {
-    document.getElementById("installDir").value = s.installDir || "";
+    document.getElementById("psycherosDir").value = s.psycherosDir || "";
+    document.getElementById("entityCoreDir").value = s.entityCoreDir || "";
+    document.getElementById("entityLoomDir").value = s.entityLoomDir || "";
     document.getElementById("userName").value = s.userName || "You";
     document.getElementById("entityName").value = s.entityName || "Assistant";
     document.getElementById("timezone").value = s.timezone || "";
@@ -998,6 +1248,25 @@ function getHTML(): string {
     fetch("/api/status").then(r => r.json()).then(s => {
       const dot = document.getElementById("statusDot");
       if (s.running) { dot.classList.add("running"); } else { dot.classList.remove("running"); }
+      const loomBtn = document.getElementById("btnLoomToggle");
+      const loomInstall = document.getElementById("btnLoomInstall");
+      const loomOpen = document.getElementById("btnLoomOpen");
+      if (s.entityLoomInstalled) {
+        loomInstall.style.display = "none";
+        loomBtn.style.display = "";
+        loomOpen.style.display = "";
+        if (s.entityLoomRunning) {
+          loomBtn.classList.add("running");
+          loomBtn.querySelector(".btn-label").textContent = "Stop Entity Loom";
+        } else {
+          loomBtn.classList.remove("running");
+          loomBtn.querySelector(".btn-label").textContent = "Start Entity Loom";
+        }
+      } else {
+        loomInstall.style.display = "";
+        loomBtn.style.display = "none";
+        loomOpen.style.display = "none";
+      }
       setAllButtons(false);
     });
   }
